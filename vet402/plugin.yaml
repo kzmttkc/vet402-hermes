@@ -1,0 +1,8 @@
+name: vet402
+version: 0.1.0
+description: Check a paid x402 or MPP API in vet402's public purchase record before the agent pays it. Blocks BLOCK, asks you on WARN.
+author: vet402
+provides_tools:
+  - vet402_check
+provides_hooks:
+  - pre_tool_call
