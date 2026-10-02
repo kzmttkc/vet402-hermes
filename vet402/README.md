@@ -29,12 +29,13 @@ No key and no wallet. Requires Hermes 0.19.0 or newer.
 
 - hermes-mpp can also pay 402 challenges inside Hermes's own HTTPX traffic, outside any tool. Hooks don't see those payments. `MPP_ALLOWED_ORIGINS` is the control for them.
 - vet402 only knows endpoints listed in public x402 and MPP discovery. For an unlisted URL the answer is "no record", which says nothing about the seller.
+- Endpoints listed with a path parameter (for example `/:chainId/quote`) match only their listed path, so a call to `/1/quote` gets no record.
 - Decisions follow vet402's published rules (https://vet402.com/observatory/methodology). The plugin keeps an answer for 5 minutes and vet402 may reuse one for 5 more, so an answer can be up to 10 minutes old.
 - Without a key, vet402 answers 10 decisions per minute per IP. Past that, a lookup counts as unreachable.
 
 ## Network and data
 
-The plugin makes up to two HTTPS GET requests to vet402.com for each new URL: `/api/v1/resolve?q=<url>` and `/api/v1/resources/<id>/decision?role=payer`. It sends the URL your agent is about to pay, with the query string and fragment removed, and nothing else: no wallet address, no key, no request body. Answers stay in memory for 5 minutes. No telemetry, no files written, no shell commands, no background processes.
+The plugin makes up to two HTTPS GET requests to vet402.com for each new URL: `/api/v1/resolve?q=<url>` and `/api/v1/resources/<id>/decision?role=payer`. It sends the URL your agent is about to pay, with any user:password, query string and fragment removed, and nothing else: no wallet address, no key, no request body. Answers stay in memory for 5 minutes. No telemetry, no files written, no shell commands, no background processes.
 
 ## Settings
 

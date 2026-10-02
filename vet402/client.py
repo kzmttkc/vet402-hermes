@@ -32,9 +32,11 @@ _lock = threading.Lock()
 
 
 def bare_url(url: str) -> str:
-    """Drop the query string and fragment (they can carry search terms or keys) and lower-case the host."""
+    """Keep scheme, host, port and path. Drop user:password, the query string and the fragment,
+    which can carry credentials, search terms or keys."""
     p = urllib.parse.urlsplit(url.strip())
-    return urllib.parse.urlunsplit((p.scheme.lower(), p.netloc.lower(), p.path or "/", "", ""))
+    host = (p.hostname or "") + (f":{p.port}" if p.port else "")
+    return urllib.parse.urlunsplit((p.scheme.lower(), host, p.path or "/", "", ""))
 
 
 def _get(path: str) -> dict[str, Any]:

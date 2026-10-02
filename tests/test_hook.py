@@ -92,6 +92,10 @@ class Client(unittest.TestCase):
         self.assertEqual(r["status"], "unknown")
         self.assertTrue(all("secret" not in p for p in seen))
 
+    def test_credentials_in_the_url_are_never_sent(self):
+        self.assertEqual(client.bare_url("https://user:sk_live_x@API.example.com:8443/p?q=1#f"),
+                         "https://api.example.com:8443/p")
+
     def test_query_variants_share_one_lookup(self):
         calls = []
         with mock.patch.object(client, "_fetch", side_effect=lambda u: calls.append(u) or fake("ALLOW", url=u)):
