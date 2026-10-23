@@ -57,9 +57,17 @@ _UNATTENDED_PLATFORMS = frozenset({"webhook", "msgraph_webhook", "api_server"})
 _APPROVAL_KEYS = ("mode", "cron_mode", "single_query_mode", "unattended_mode")
 
 
+_warned_empty_guard = False
+
+
 def _guarded_tools() -> set[str]:
+    global _warned_empty_guard
     raw = os.environ.get("VET402_GUARD_TOOLS", "mpp_fetch")
-    return {t.strip() for t in raw.split(",") if t.strip()}
+    tools = {t.strip() for t in raw.split(",") if t.strip()}
+    if not tools and not _warned_empty_guard:
+        _warned_empty_guard = True
+        logger.warning("vet402: VET402_GUARD_TOOLS is empty, so no tool call is checked before it pays")
+    return tools
 
 
 def _truthy(value: str | None) -> bool:
@@ -301,14 +309,29 @@ def _deny(r: dict, method: str, *, unattended: bool) -> dict:
     return {"action": "block", "message": message}
 
 
+_URL_KEYS = ("url", "uri", "endpoint", "href", "target", "resource", "link")
+
+
+def _paid_url(args: dict) -> str:
+    """The URL a guarded tool is about to pay. A guarded tool may name it url, uri, endpoint and so on,
+    so the known keys come first and then any other top-level string that is an http(s) URL (2026-10-24 audit, hole 8)."""
+    for key in _URL_KEYS:
+        value = args.get(key)
+        if isinstance(value, str) and value.strip().startswith(("http://", "https://")):
+            return value.strip()
+    for value in args.values():
+        if isinstance(value, str) and value.strip().startswith(("http://", "https://")):
+            return value.strip()
+    return ""
+
+
 def before_tool(tool_name: str, args: dict, task_id: str = "", **kwargs: Any):
     if tool_name not in _guarded_tools():
         return None
     if not isinstance(args, dict):
         args = {}
-    # One key, on purpose. A second key such as uri is not a payment this hook can see.
-    url = str(args.get("url") or "").strip()
-    if not url.startswith(("http://", "https://")):
+    url = _paid_url(args)
+    if not url:
         return None
     method = str(args.get("method") or "GET")
     try:

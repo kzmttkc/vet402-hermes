@@ -188,6 +188,25 @@ class Hook(Isolated):
         self.assertIn("The payment was not made.", outcome["message"])
         self.assertIn(SELLER, outcome["message"])
 
+    def test_a_guarded_tool_that_names_the_url_uri_is_still_checked(self):
+        # 2026-10-24 audit, hole 8: the hook read only args["url"], so a guarded tool that passed the paid URL
+        # as uri, endpoint or any other key ran with no lookup.
+        for key in ("uri", "endpoint", "target_url"):
+            with self.subTest(key=key):
+                with mock.patch.object(client, "lookup", return_value=fake("BLOCK")) as lookup:
+                    outcome = vet402.before_tool("mpp_fetch", {key: SELLER, "method": "POST"}, task_id="t")
+                self.assertEqual(outcome["action"], "block")
+                lookup.assert_called_once()
+                self.assertEqual(lookup.call_args.args[0], SELLER)
+
+    def test_an_empty_guard_list_is_logged_once(self):
+        os.environ["VET402_GUARD_TOOLS"] = ""
+        vet402._warned_empty_guard = False
+        with self.assertLogs("vet402", level="WARNING") as logs:
+            self.assertIsNone(vet402.before_tool("mpp_fetch", {"url": SELLER}, task_id="t"))
+            self.assertIsNone(vet402.before_tool("mpp_fetch", {"url": SELLER}, task_id="t"))
+        self.assertEqual(sum("VET402_GUARD_TOOLS is empty" in line for line in logs.output), 1)
+
     def test_block_still_stops_when_yolo_is_on(self):
         os.environ["HERMES_YOLO_MODE"] = "1"
         with mock.patch.object(client, "lookup", return_value=fake("BLOCK")):
@@ -869,14 +888,17 @@ class SecretsOnTheWire(Isolated):
         self.assertNotIn("sk_live_x", blob)
         self.assertIn("https://seller.example/pay", outcome["message"])
 
-    def test_uri_alone_is_not_checked_and_url_wins_when_both_exist(self):
+    def test_uri_alone_is_checked_and_url_wins_when_both_exist(self):
+        # Was: uri alone was not checked (2026-10-24 audit, hole 8). A guarded tool's paid URL is looked up
+        # whatever key carries it.
         def action(path, query):
             return ("json", 200, resource(method="GET"))
 
         httpd = self.boot(action)
         self.use(httpd)
-        self.assertIsNone(vet402.before_tool("mpp_fetch", {"uri": "https://seller.example/via-uri"}, task_id="t"))
-        self.assertEqual(httpd.seen, [])
+        vet402.before_tool("mpp_fetch", {"uri": "https://seller.example/via-uri"}, task_id="t")
+        self.assertTrue(any("via-uri" in str(hit) for hit in httpd.seen))
+        httpd.seen.clear()
         # decision is BLOCK only after resolve. Make the next response a block.
         def blocking(path, query):
             if path.startswith("/api/v1/resolve"):
