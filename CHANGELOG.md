@@ -8,6 +8,8 @@ A missing record for the paying method, and an outage, now ask a person. A WARN 
 
 Lookups send the paying HTTP method on both requests and use only the record for that method. Redirects are not followed.
 
+The hook finds the paid address under `uri`, `endpoint` and any other URL argument, not only `url`. An empty `VET402_GUARD_TOOLS` logs one warning.
+
 ## 0.1.0
 
 First release. The plugin checks a paid URL in vet402's public record before `mpp_fetch` runs.
