@@ -296,6 +296,17 @@ def _http_url(value: Any) -> str:
     return urlunsplit((parts.scheme.lower(),) + tuple(parts[1:]))
 
 
+def _shown_url(url: str) -> str:
+    """The URL as a person may see it in a message: no userinfo, query or fragment. bare_url can raise on a bad port,
+    so this one splits by hand and never raises (2026-10-24 review)."""
+    try:
+        parts = urlsplit(url)
+        host = parts.netloc.rsplit("@", 1)[-1]
+        return urlunsplit((parts.scheme, host, parts.path, "", ""))
+    except ValueError:
+        return url.split("?", 1)[0].split("#", 1)[0].split("@")[-1]
+
+
 def vet402_check(args: dict, **kwargs: Any) -> str:
     url = _http_url((args or {}).get("url"))
     if not url:
@@ -303,7 +314,7 @@ def vet402_check(args: dict, **kwargs: Any) -> str:
     try:
         return json.dumps(client.lookup(url, str((args or {}).get("method") or "GET")))
     except Exception as exc:
-        return json.dumps({"status": "unavailable", "url": url,
+        return json.dumps({"status": "unavailable", "url": _shown_url(url),
                            "why": f"vet402 gave no decision ({type(exc).__name__})."})
 
 
@@ -367,7 +378,7 @@ def _check(tool_name: str, args: Any):
         record = client.lookup(url, method)
     except Exception as exc:
         logger.warning("vet402: lookup failed (%s)", type(exc).__name__)
-        record = {"status": "unavailable", "url": url, "method": method,
+        record = {"status": "unavailable", "url": _shown_url(url), "method": method,
                   "why": f"vet402 gave no decision ({type(exc).__name__})."}
     status = record.get("status")
     paying = (record.get("method") or method or "GET")

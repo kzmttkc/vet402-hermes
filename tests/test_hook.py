@@ -225,6 +225,15 @@ class Hook(Isolated):
         self.assertEqual(second["action"], "approve")
         self.assertNotEqual(first["rule_key"], second["rule_key"])
 
+    def test_a_failed_lookup_does_not_show_the_query_or_userinfo(self):
+        url = "https://user:pw@seller.example:99999/pay?key=sk_live_secret#frag"
+        with mock.patch.object(client, "lookup", side_effect=ValueError("bad port")):
+            with mock.patch.object(vet402, "person_can_answer", return_value=True):
+                outcome = vet402.before_tool("mpp_fetch", {"url": url}, task_id="t")
+        shown = outcome["message"] + outcome.get("rule_key", "")
+        for secret in ("sk_live_secret", "pw@", "frag", "user:"):
+            self.assertNotIn(secret, shown)
+
     def test_an_empty_guard_list_is_logged_once(self):
         os.environ["VET402_GUARD_TOOLS"] = ""
         vet402._warned_empty_guard = False
