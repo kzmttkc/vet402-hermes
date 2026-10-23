@@ -31,13 +31,13 @@ hermes plugins install vet402
 hermes plugins enable vet402
 ```
 
-No key and no wallet. The manifest asks for Hermes 0.22.2 or newer, the oldest version this release was run on (approval cards with a per-URL rule key).
+No key and no wallet. The manifest asks for Hermes 0.22.2 or newer, the oldest version this release was run on.
 
 ## What it adds
 
 - **`pre_tool_call` hook.** It runs before a tool listed in `VET402_GUARD_TOOLS`. The default list is `mpp_fetch` from [hermes-mpp](https://github.com/tempoxyz/hermes-mpp). The hook checks the paid address whatever argument carries it: `url` first, then `uri`, `endpoint`, `href`, `target`, `resource` or `link`, then any other top-level argument that is an http or https URL. A tool that is not in the list is not checked. An empty `VET402_GUARD_TOOLS` checks no tool, and the plugin logs one warning when that happens.
 - **`vet402_check` tool.** The model can ask about any URL before it decides to pay. It returns the recommendation for that method, the reason codes in vet402's words, how many times vet402 paid that endpoint and how often it delivered, and a link to the public page.
-- **`vet402` skill.** It tells the model to write the URL, the method, the verdict, the reason codes, and the evidence link into the approval body before asking.
+- **`vet402` skill.** It tells the model to write the URL, the method, the verdict, the reason codes, and the evidence link into the approval body before asking. While the plugin is enabled, the skill adds one line to the skills index of every session.
 
 ## Limits
 

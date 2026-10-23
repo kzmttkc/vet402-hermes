@@ -217,9 +217,9 @@ class Hook(Isolated):
     def test_always_for_one_warn_does_not_cover_a_different_warn(self):
         os.environ.pop("HERMES_YOLO_MODE", None)
         with mock.patch.object(vet402, "person_can_answer", return_value=True):
-            with mock.patch.object(client, "lookup", return_value=fake("WARN", adverse=["l1_stale"])):
+            with mock.patch.object(client, "lookup", return_value=fake("WARN", reasons=["l1_stale"], adverse=["l1_stale"])):
                 first = vet402.before_tool("mpp_fetch", {"url": SELLER}, task_id="t")
-            with mock.patch.object(client, "lookup", return_value=fake("WARN", adverse=["l1_paid_not_delivered"])):
+            with mock.patch.object(client, "lookup", return_value=fake("WARN", reasons=["l1_paid_not_delivered"], adverse=["l1_paid_not_delivered"])):
                 second = vet402.before_tool("mpp_fetch", {"url": SELLER}, task_id="t")
         self.assertEqual(first["action"], "approve")
         self.assertEqual(second["action"], "approve")
@@ -850,6 +850,14 @@ class WarnCodes(Isolated):
             self.assertIn("https://seller.example/", outcome["rule_key"])
             self.assertIn(code, outcome["rule_key"])
             self.assertIn("Refusing pays nothing.", outcome["message"])
+
+    def test_always_key_differs_for_two_codes_this_plugin_has_no_phrase_for(self):
+        client._cache.clear()
+        first = self._warn(["future_code_a"])
+        second = self._warn(["future_code_b"])
+        self.assertEqual(first["action"], "approve")
+        self.assertIn("future_code_a", first["rule_key"].split(" ")[0])
+        self.assertNotEqual(first["rule_key"].split(" ")[0], second["rule_key"].split(" ")[0])
 
     def test_sibling_warn_codes_also_ask(self):
         for code in (

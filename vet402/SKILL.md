@@ -24,4 +24,4 @@ Call `vet402_check` before a payment. Write all of the following into the approv
 - the reason codes
 - the evidence link
 
-Do not pay, buy, or call the paid API until the record for that method is ALLOW, or a person has approved that exact body. A refusal pays nothing. `mpp_fetch` does not run.
+Do not pay, buy, or call the paid API until the record for that method is ALLOW, or a WARN whose only message is that vet402 has not bought there yet, or a person has approved that exact body. A refusal pays nothing. `mpp_fetch` does not run.

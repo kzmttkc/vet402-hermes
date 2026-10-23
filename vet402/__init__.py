@@ -324,9 +324,9 @@ def _ask(r: dict, method: str) -> dict:
     return {
         "action": "approve",
         "message": client.describe(r, method) + " Refusing pays nothing.",
-        # The reason codes are part of the key, so an "always" given for one WARN does not cover a later,
-        # different WARN on the same URL (2026-10-24 review).
-        "rule_key": f"vet402:{r.get('status')}:{','.join(sorted(str(c) for c in (r.get('adverse') or [])))}:{method} {r.get('url')}",
+        # The raw reason codes are part of the key, so an "always" given for one WARN does not cover a later,
+        # different WARN on the same URL, including a code this plugin has no phrase for.
+        "rule_key": f"vet402:{r.get('status')}:{','.join(sorted(str(c) for c in (r.get('reasons') or r.get('adverse') or []) if isinstance(c, str)))}:{method} {r.get('url')}",
     }
 
 
