@@ -12,6 +12,8 @@ The hook finds the paid address under `uri`, `endpoint` and any other URL argume
 
 An uppercase scheme such as `HTTPS://` is checked like `https://`. An "always" approval covers only the same WARN reasons on the same URL and method. An error inside the check refuses the payment.
 
+The manifest now asks for Hermes 0.22.2 or newer, the oldest version this release was run on.
+
 ## 0.1.0
 
 First release. The plugin checks a paid URL in vet402's public record before `mpp_fetch` runs.

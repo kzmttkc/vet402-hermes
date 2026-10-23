@@ -31,7 +31,7 @@ hermes plugins install vet402
 hermes plugins enable vet402
 ```
 
-No key and no wallet. The manifest asks for Hermes 0.19.0 or newer. That floor was not re-run for this release.
+No key and no wallet. The manifest asks for Hermes 0.22.2 or newer, the oldest version this release was run on (approval cards with a per-URL rule key).
 
 ## What it adds
 

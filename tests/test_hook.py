@@ -1037,7 +1037,7 @@ class Words(unittest.TestCase):
         self.assertNotIn("fails open", changelog.lower())
         manifest = (ROOT / "vet402" / "plugin.yaml").read_text(encoding="utf-8")
         self.assertIn("version: 0.2.0", manifest)
-        self.assertIn('requires_hermes: ">=0.19.0"', manifest)
+        self.assertIn('requires_hermes: ">=0.22.2"', manifest)
 
     def test_user_facing_english_has_no_forbidden_marks(self):
         for path in (
