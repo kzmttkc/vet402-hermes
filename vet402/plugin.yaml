@@ -1,5 +1,5 @@
 name: vet402
-version: 0.1.0
+version: 0.2.0
 description: Check a paid x402 or MPP URL in vet402's public purchase record before the agent pays it.
 author: vet402
 requires_hermes: ">=0.19.0"

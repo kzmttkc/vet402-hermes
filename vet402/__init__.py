@@ -2,12 +2,17 @@
 
 - Tool `vet402_check`: the model can ask about any URL.
 - Hook `pre_tool_call`: before a paying tool runs (by default `mpp_fetch` from hermes-mpp),
-  vet402's BLOCK stops the call. A WARN with evidence against the seller goes to the human-approval
-  gate. ALLOW runs. Everything else (a WARN only because vet402 has not bought there yet, an unknown
-  URL, a vet402 outage) runs unless VET402_UNKNOWN=approve.
+  the hook reads the record for that URL and that HTTP method.
+  ALLOW for that method runs. BLOCK stops the call.
+  WARN runs only for the reason code l1_not_attempted (vet402 has not bought there yet).
+  Every other WARN, a missing record, an unknown status, and an outage ask a person.
+  yolo, approvals off, cron, and any session with nobody to answer deny the call instead.
+  VET402_UNKNOWN=allow is the only opt-in that lets a missing record or an outage pay.
+  A redirect or an HTTP 400 is not an outage. Those still ask, or deny when nobody can answer.
 
 Limit: hermes-mpp can also pay 402s inside core HTTPX traffic, which does not pass through
 any tool. Hooks cannot see those payments. MPP_ALLOWED_ORIGINS is the control for them.
+The hook reads only the argument named url.
 """
 
 from __future__ import annotations
@@ -15,19 +20,27 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
+from pathlib import Path
 from typing import Any
 
 from . import client
 
 logger = logging.getLogger(__name__)
 
+_SKILL_DESCRIPTION = (
+    "Check a seller in vet402 before paying, buying, or calling a paid API. "
+    "Use this when asked whether to pay, whether the seller delivered, or to look up a paid URL before paying."
+)
+
 SCHEMA = {
     "name": "vet402_check",
     "description": (
-        "Before paying an x402 or MPP API, look the URL up in vet402's public record of real "
-        "purchases. Returns vet402's recommendation (ALLOW, WARN or BLOCK) with the reasons, how "
-        "many times vet402 paid that endpoint and how often it delivered, and a link to the evidence. "
-        "Returns status 'unknown' when vet402 has never seen the URL. Read-only, free, no key."
+        "Check before paying, to buy, or to call a paid API: should you pay this seller, and has it delivered. "
+        "Looks the URL up in vet402's public record of real purchases. "
+        "Returns ALLOW, WARN, or BLOCK with the reasons, how many times vet402 paid that endpoint and how often it delivered, "
+        "and a link to the evidence. Returns status unknown when vet402 has no record for that method. "
+        "Read-only, free, no key."
     ),
     "parameters": {
         "type": "object",
@@ -39,58 +52,294 @@ SCHEMA = {
     },
 }
 
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+_UNATTENDED_PLATFORMS = frozenset({"webhook", "msgraph_webhook", "api_server"})
+_APPROVAL_KEYS = ("mode", "cron_mode", "single_query_mode", "unattended_mode")
+
 
 def _guarded_tools() -> set[str]:
     raw = os.environ.get("VET402_GUARD_TOOLS", "mpp_fetch")
     return {t.strip() for t in raw.split(",") if t.strip()}
 
 
+def _truthy(value: str | None) -> bool:
+    return (value or "").strip().lower() in _TRUTHY
+
+
+def _loaded(name: str) -> Any:
+    """A Hermes module only when the host already imported it. Do not import it from here."""
+    return sys.modules.get(name)
+
+
+def _call_loaded(module: str, fn_name: str) -> Any:
+    mod = _loaded(module)
+    fn = getattr(mod, fn_name, None) if mod is not None else None
+    if fn is None:
+        return None
+    try:
+        return fn()
+    except Exception:
+        return None
+
+
+def _yolo() -> bool:
+    if _truthy(os.environ.get("HERMES_YOLO_MODE")):
+        return True
+    mod = _loaded("tools.approval")
+    fn = getattr(mod, "_yolo_active", None) if mod is not None else None
+    if fn is None:
+        return False
+    try:
+        return bool(fn())
+    except Exception:
+        # If the host's yolo flag cannot be read, do not ask. Asking would pay under yolo.
+        return True
+
+
+def _approval_mode() -> str:
+    """'off' when Hermes would skip the prompt. Empty when this process cannot tell."""
+    loaded = _call_loaded("tools.approval_context", "_get_approval_mode")
+    if isinstance(loaded, str) and loaded:
+        return loaded.strip().lower()
+    return _approval_mode_from_home()
+
+
+def _approval_mode_from_home() -> str:
+    """Read approvals.mode from $HERMES_HOME/config.yaml and nothing else.
+
+    An unset HERMES_HOME is not looked up, so the default home is never opened.
+    A config path that resolves outside that home is not opened.
+    """
+    home_raw = os.environ.get("HERMES_HOME", "").strip()
+    if not home_raw:
+        return ""
+    home = Path(home_raw)
+    try:
+        home_resolved = home.resolve()
+    except OSError:
+        return ""
+    path = home_resolved / "config.yaml"
+    try:
+        if not path.is_file():
+            return ""
+        resolved = path.resolve()
+    except OSError:
+        return ""
+    if resolved != home_resolved and home_resolved not in resolved.parents:
+        return ""
+    try:
+        return _parse_approval_mode(_iter_config_lines(resolved))
+    except OSError:
+        return ""
+
+
+def _iter_config_lines(path: Path):
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        for index, line in enumerate(handle):
+            if index >= 4000:
+                break
+            if len(line) > 200:
+                continue
+            yield line
+
+
+def _indent(line: str) -> int:
+    expanded = line.expandtabs(2)
+    return len(expanded) - len(expanded.lstrip(" "))
+
+
+def _yaml_word(value: str) -> str:
+    text = value.split("#", 1)[0].strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in ("'", '"'):
+        text = text[1:-1].strip()
+    return text.lower()
+
+
+def _parse_approval_mode(lines) -> str:
+    in_block = False
+    block_indent = 0
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = _indent(line)
+        if not in_block:
+            if stripped == "approvals:" or stripped.startswith("approvals:"):
+                rest = stripped[len("approvals:"):].strip()
+                if rest.startswith("{") and rest.endswith("}"):
+                    return _mode_from_inline(rest)
+                in_block = True
+                block_indent = indent
+            continue
+        if indent <= block_indent:
+            return ""
+        name, sep, value = stripped.partition(":")
+        if sep and name.strip() in _APPROVAL_KEYS and name.strip() == "mode":
+            word = _yaml_word(value)
+            if word in {"off", "false", "no"}:
+                return "off"
+            return word
+    return ""
+
+
+def _mode_from_inline(body: str) -> str:
+    inner = body[1:-1]
+    for part in inner.split(","):
+        name, sep, value = part.partition(":")
+        if sep and name.strip() == "mode":
+            word = _yaml_word(value)
+            return "off" if word in {"off", "false", "no"} else word
+    return ""
+
+
+def _cron() -> bool:
+    loaded = _call_loaded("tools.approval_context", "_is_cron_approval_context")
+    if loaded is not None:
+        return bool(loaded)
+    return _truthy(os.environ.get("HERMES_CRON_SESSION"))
+
+
+def _single_query() -> bool:
+    loaded = _call_loaded("tools.approval_context", "_is_single_query_approval_context")
+    if loaded is not None:
+        return bool(loaded)
+    return _truthy(os.environ.get("HERMES_SINGLE_QUERY_SESSION"))
+
+
+def _kanban() -> bool:
+    return bool(os.environ.get("HERMES_KANBAN_TASK", "").strip())
+
+
+def _platform() -> str:
+    loaded = _call_loaded("tools.approval_context", "_get_session_platform")
+    if isinstance(loaded, str) and loaded.strip():
+        return loaded.strip().lower()
+    session = os.environ.get("HERMES_SESSION_PLATFORM", "").strip().lower()
+    if session:
+        return session
+    # Older name. Only an unattended value counts, so a desktop label cannot look like a person is here.
+    other = os.environ.get("HERMES_PLATFORM", "").strip().lower()
+    if other in _UNATTENDED_PLATFORMS:
+        return other
+    return ""
+
+
+def _interactive() -> bool:
+    loaded = _call_loaded("tools.approval_context", "_is_interactive_cli")
+    if loaded is not None:
+        return bool(loaded)
+    return _truthy(os.environ.get("HERMES_INTERACTIVE"))
+
+
+def _gateway() -> bool:
+    loaded = _call_loaded("tools.approval_context", "_is_gateway_approval_context")
+    if loaded is not None:
+        return bool(loaded)
+    if _cron() or _platform() in _UNATTENDED_PLATFORMS:
+        return False
+    return _truthy(os.environ.get("HERMES_GATEWAY_SESSION")) or _truthy(os.environ.get("HERMES_EXEC_ASK"))
+
+
+def person_can_answer() -> bool:
+    """False when Hermes would turn an approve action into a payment with nobody asked."""
+    if _yolo() or _approval_mode() == "off":
+        return False
+    if _cron() or _single_query() or _kanban() or _platform() in _UNATTENDED_PLATFORMS:
+        return False
+    if _interactive() or _gateway():
+        return True
+    platform = _platform()
+    return bool(platform) and platform not in _UNATTENDED_PLATFORMS
+
+
+def why_nobody() -> str:
+    if _yolo():
+        return "HERMES_YOLO_MODE is on, so a prompt would be skipped."
+    if _approval_mode() == "off":
+        return "Approvals are off, so a prompt would be skipped."
+    if _cron():
+        return "This is a cron session, so nobody is here to approve it."
+    if _single_query():
+        return "This is a single query session, so nobody is here to approve it."
+    if _kanban():
+        return "This is a kanban session, so nobody is here to approve it."
+    if _platform() in _UNATTENDED_PLATFORMS:
+        return "This session has no person to approve a payment."
+    return "Nobody is here to approve a payment."
+
+
+def _explicit_allow() -> bool:
+    return os.environ.get("VET402_UNKNOWN", "").strip().lower() == "allow"
+
+
 def vet402_check(args: dict, **kwargs: Any) -> str:
-    url = str(args.get("url") or "").strip()
+    url = str((args or {}).get("url") or "").strip()
     if not url.startswith(("http://", "https://")):
         return json.dumps({"error": "url must be an absolute http(s) URL"})
     try:
-        return json.dumps(client.lookup(url, str(args.get("method") or "GET")))
-    except Exception as e:
-        return json.dumps({"status": "unavailable", "url": url, "why": str(e)})
+        return json.dumps(client.lookup(url, str((args or {}).get("method") or "GET")))
+    except Exception as exc:
+        return json.dumps({"status": "unavailable", "url": client.bare_url(url) if url.startswith(("http://", "https://")) else url,
+                           "why": f"vet402 gave no decision ({type(exc).__name__})."})
 
 
-def _approve(r: dict, method: str) -> dict:
-    # rule_key keeps Hermes's "allow for this session / always" per URL. Without it Hermes keys the
-    # approval by tool name, and one approved WARN would let every later WARN pay unasked.
+def _ask(r: dict, method: str) -> dict:
+    # rule_key keeps Hermes's "allow for this session / always" per method and URL.
+    # Without it Hermes keys the approval by tool name, and one approved WARN would let every later WARN pay.
     return {
         "action": "approve",
-        "message": client.describe(r) + " Approve to pay anyway.",
-        "rule_key": f"vet402:{r.get('status')}:{method.upper()} {r.get('url')}",
+        "message": client.describe(r, method) + " Refusing pays nothing.",
+        "rule_key": f"vet402:{r.get('status')}:{method} {r.get('url')}",
     }
+
+
+def _deny(r: dict, method: str, *, unattended: bool) -> dict:
+    message = client.describe(r, method)
+    if unattended:
+        message += " " + why_nobody()
+    message += " The payment was not made."
+    return {"action": "block", "message": message}
 
 
 def before_tool(tool_name: str, args: dict, task_id: str = "", **kwargs: Any):
     if tool_name not in _guarded_tools():
         return None
-    args = args or {}
+    if not isinstance(args, dict):
+        args = {}
+    # One key, on purpose. A second key such as uri is not a payment this hook can see.
     url = str(args.get("url") or "").strip()
     if not url.startswith(("http://", "https://")):
         return None
     method = str(args.get("method") or "GET")
     try:
-        r = client.lookup(url, method)
-    except Exception:
-        logger.warning("vet402: lookup failed for %s; the call runs unchecked", url)
+        record = client.lookup(url, method)
+    except Exception as exc:
+        logger.warning("vet402: lookup failed (%s)", type(exc).__name__)
+        record = {"status": "unavailable", "url": client.bare_url(url), "method": method,
+                  "why": f"vet402 gave no decision ({type(exc).__name__})."}
+    status = record.get("status")
+    paying = (record.get("method") or method or "GET")
+    paying = paying.strip().upper() if isinstance(paying, str) else "GET"
+    if status == "ALLOW":
         return None
-    if r.get("status") == "BLOCK":
-        return {"action": "block", "message": client.describe(r) + " The payment was not made."}
-    if r.get("status") == "WARN" and r.get("adverse"):
-        return _approve(r, method)
-    # ALLOW runs. A WARN with no evidence against the seller (usually: vet402 has not bought from it
-    # yet), an unknown URL and an outage follow VET402_UNKNOWN.
-    if r.get("status") != "ALLOW":
-        if os.environ.get("VET402_UNKNOWN", "allow").strip().lower() == "approve":
-            return _approve(r, method)
-        logger.info("%s", client.describe(r))
-    return None
+    if status == "BLOCK":
+        return _deny(record, paying, unattended=False)
+    if status == "WARN" and client.only_not_bought(record):
+        return None
+    # allow is an explicit opt-in for a missing record or an outage only.
+    # It does not let a WARN, a BLOCK, or a status outside the list pay.
+    if _explicit_allow() and status in ("unknown", "unavailable"):
+        logger.info("%s", client.describe(record, paying))
+        return None
+    if person_can_answer():
+        return _ask(record, paying)
+    return _deny(record, paying, unattended=True)
 
 
 def register(ctx: Any) -> None:
     ctx.register_tool(name="vet402_check", toolset="vet402", schema=SCHEMA, handler=vet402_check)
     ctx.register_hook("pre_tool_call", before_tool)
+    skill = Path(__file__).with_name("SKILL.md")
+    register_skill = getattr(ctx, "register_skill", None)
+    if register_skill is not None and skill.is_file():
+        register_skill("vet402", skill, description=_SKILL_DESCRIPTION)
