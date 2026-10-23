@@ -10,6 +10,8 @@ Lookups send the paying HTTP method on both requests and use only the record for
 
 The hook finds the paid address under `uri`, `endpoint` and any other URL argument, not only `url`. An empty `VET402_GUARD_TOOLS` logs one warning.
 
+An uppercase scheme such as `HTTPS://` is checked like `https://`. An "always" approval covers only the same WARN reasons on the same URL and method. An error inside the check refuses the payment.
+
 ## 0.1.0
 
 First release. The plugin checks a paid URL in vet402's public record before `mpp_fetch` runs.

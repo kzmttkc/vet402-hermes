@@ -1,6 +1,6 @@
 # vet402 for Hermes
 
-hermes-mpp can pay a 402 inside Hermes HTTPX traffic, and this plugin never sees that payment. `MPP_ALLOWED_ORIGINS` is the control for it. The hook below checks only a tool named in `VET402_GUARD_TOOLS`, and only the argument named `url`.
+hermes-mpp can pay a 402 inside Hermes HTTPX traffic, and this plugin never sees that payment. `MPP_ALLOWED_ORIGINS` is the control for it. The hook below checks only a tool named in `VET402_GUARD_TOOLS`, and reads the paid address from `url`, `uri`, `endpoint` or any other URL argument.
 
 Before that tool pays an x402 or MPP API, the plugin looks the URL and the HTTP method up in vet402's public record of real purchases.
 
@@ -45,6 +45,7 @@ No key and no wallet. The manifest asks for Hermes 0.19.0 or newer. That floor w
 - vet402 only knows endpoints listed in public x402 and MPP discovery. For an unlisted URL the answer is "no record", which says nothing about the seller. The hook then asks, or refuses when nobody can answer.
 - Endpoints listed with a path parameter (for example `/:chainId/quote`) match only their listed path, so a call to `/1/quote` gets no record for that path.
 - A record with no method is treated as a GET record. A POST payment does not pass on it.
+- The hook checks the URL a tool is called with. If hermes-mpp then follows a redirect from that URL and pays a 402 at the new address, the hook does not see the new address.
 - Decisions follow vet402's published rules (https://vet402.com/observatory/methodology). The plugin keeps an ALLOW, WARN, BLOCK, or unknown answer for 5 minutes and vet402 may reuse one for 5 more, so an answer can be up to 10 minutes old. Outages and rejected lookups are not kept.
 - Without a key, vet402 answers 10 decisions per minute per IP. Past that, a lookup counts as cannot be reached.
 
@@ -56,7 +57,7 @@ The plugin makes up to two HTTPS GET requests to vet402.com for each new URL and
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `VET402_GUARD_TOOLS` | `mpp_fetch` | Comma-separated tools to check before they run. Only the argument named `url` is read. |
+| `VET402_GUARD_TOOLS` | `mpp_fetch` | Comma-separated tools to check before they run. The paid address is read from `url`, `uri`, `endpoint` or any other URL argument. |
 | `VET402_UNKNOWN` | ask a person | `allow` is the only opt-in that pays with no record or during an outage. See the sentence above for what that choice skips. |
 | `VET402_API` | `https://vet402.com` | API base, read at import |
 | `VET402_TIMEOUT_S` | `6` | Request timeout in seconds, read at import |

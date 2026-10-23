@@ -199,6 +199,32 @@ class Hook(Isolated):
                 lookup.assert_called_once()
                 self.assertEqual(lookup.call_args.args[0], SELLER)
 
+    def test_an_uppercase_scheme_is_still_checked(self):
+        # 2026-10-24 review: HTTPS://... skipped the hook, and httpx pays it the same as https://.
+        for url in ("HTTPS://seller.example/pay", "Http://seller.example/pay"):
+            with self.subTest(url=url):
+                with mock.patch.object(client, "lookup", return_value=fake("BLOCK")) as lookup:
+                    outcome = vet402.before_tool("mpp_fetch", {"url": url}, task_id="t")
+                self.assertEqual(outcome["action"], "block")
+                self.assertTrue(lookup.call_args.args[0].startswith("http"))
+
+    def test_an_unexpected_error_refuses_instead_of_paying(self):
+        with mock.patch.object(vet402, "_check", side_effect=ValueError("bad port")):
+            outcome = vet402.before_tool("mpp_fetch", {"url": SELLER}, task_id="t")
+        self.assertEqual(outcome["action"], "block")
+        self.assertIn("The payment was not made.", outcome["message"])
+
+    def test_always_for_one_warn_does_not_cover_a_different_warn(self):
+        os.environ.pop("HERMES_YOLO_MODE", None)
+        with mock.patch.object(vet402, "person_can_answer", return_value=True):
+            with mock.patch.object(client, "lookup", return_value=fake("WARN", adverse=["l1_stale"])):
+                first = vet402.before_tool("mpp_fetch", {"url": SELLER}, task_id="t")
+            with mock.patch.object(client, "lookup", return_value=fake("WARN", adverse=["l1_paid_not_delivered"])):
+                second = vet402.before_tool("mpp_fetch", {"url": SELLER}, task_id="t")
+        self.assertEqual(first["action"], "approve")
+        self.assertEqual(second["action"], "approve")
+        self.assertNotEqual(first["rule_key"], second["rule_key"])
+
     def test_an_empty_guard_list_is_logged_once(self):
         os.environ["VET402_GUARD_TOOLS"] = ""
         vet402._warned_empty_guard = False
@@ -991,7 +1017,7 @@ class Words(unittest.TestCase):
         self.assertIn("server name", readme)
         self.assertIn("Refusing pays nothing.", readme)
         self.assertIn("VET402_GUARD_TOOLS", readme)
-        self.assertIn("argument named `url`", readme)
+        self.assertIn("any other URL argument", readme)
         self.assertIn("`uri`", readme)
         self.assertIn("&method=", readme)
         self.assertIn("VET402_UNKNOWN=allow", readme)

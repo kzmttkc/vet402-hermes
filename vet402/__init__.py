@@ -12,7 +12,7 @@
 
 Limit: hermes-mpp can also pay 402s inside core HTTPX traffic, which does not pass through
 any tool. Hooks cannot see those payments. MPP_ALLOWED_ORIGINS is the control for them.
-The hook reads only the argument named url.
+The hook reads the paid address from url, uri, endpoint or any other URL argument.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import sys
+from urllib.parse import urlsplit, urlunsplit
 from pathlib import Path
 from typing import Any
 
@@ -280,14 +281,29 @@ def _explicit_allow() -> bool:
     return os.environ.get("VET402_UNKNOWN", "").strip().lower() == "allow"
 
 
+def _http_url(value: Any) -> str:
+    """An absolute http(s) URL with the scheme lowercased, or "". HTTPS://x and https://x pay the same seller,
+    so the scheme is compared without case (2026-10-24 review: an uppercase scheme skipped the hook)."""
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    try:
+        parts = urlsplit(text)
+    except ValueError:
+        return ""
+    if parts.scheme.lower() not in ("http", "https") or not parts.netloc:
+        return ""
+    return urlunsplit((parts.scheme.lower(),) + tuple(parts[1:]))
+
+
 def vet402_check(args: dict, **kwargs: Any) -> str:
-    url = str((args or {}).get("url") or "").strip()
-    if not url.startswith(("http://", "https://")):
+    url = _http_url((args or {}).get("url"))
+    if not url:
         return json.dumps({"error": "url must be an absolute http(s) URL"})
     try:
         return json.dumps(client.lookup(url, str((args or {}).get("method") or "GET")))
     except Exception as exc:
-        return json.dumps({"status": "unavailable", "url": client.bare_url(url) if url.startswith(("http://", "https://")) else url,
+        return json.dumps({"status": "unavailable", "url": url,
                            "why": f"vet402 gave no decision ({type(exc).__name__})."})
 
 
@@ -297,7 +313,9 @@ def _ask(r: dict, method: str) -> dict:
     return {
         "action": "approve",
         "message": client.describe(r, method) + " Refusing pays nothing.",
-        "rule_key": f"vet402:{r.get('status')}:{method} {r.get('url')}",
+        # The reason codes are part of the key, so an "always" given for one WARN does not cover a later,
+        # different WARN on the same URL (2026-10-24 review).
+        "rule_key": f"vet402:{r.get('status')}:{','.join(sorted(str(c) for c in (r.get('adverse') or [])))}:{method} {r.get('url')}",
     }
 
 
@@ -316,18 +334,29 @@ def _paid_url(args: dict) -> str:
     """The URL a guarded tool is about to pay. A guarded tool may name it url, uri, endpoint and so on,
     so the known keys come first and then any other top-level string that is an http(s) URL (2026-10-24 audit, hole 8)."""
     for key in _URL_KEYS:
-        value = args.get(key)
-        if isinstance(value, str) and value.strip().startswith(("http://", "https://")):
-            return value.strip()
+        url = _http_url(args.get(key))
+        if url:
+            return url
     for value in args.values():
-        if isinstance(value, str) and value.strip().startswith(("http://", "https://")):
-            return value.strip()
+        url = _http_url(value)
+        if url:
+            return url
     return ""
 
 
 def before_tool(tool_name: str, args: dict, task_id: str = "", **kwargs: Any):
     if tool_name not in _guarded_tools():
         return None
+    try:
+        return _check(tool_name, args)
+    except Exception as exc:
+        # Anything this hook did not expect refuses the payment instead of letting it run unchecked.
+        logger.warning("vet402: the check failed (%s)", type(exc).__name__)
+        return {"action": "block",
+                "message": f"vet402 could not check this call ({type(exc).__name__}). The payment was not made."}
+
+
+def _check(tool_name: str, args: Any):
     if not isinstance(args, dict):
         args = {}
     url = _paid_url(args)
@@ -338,7 +367,7 @@ def before_tool(tool_name: str, args: dict, task_id: str = "", **kwargs: Any):
         record = client.lookup(url, method)
     except Exception as exc:
         logger.warning("vet402: lookup failed (%s)", type(exc).__name__)
-        record = {"status": "unavailable", "url": client.bare_url(url), "method": method,
+        record = {"status": "unavailable", "url": url, "method": method,
                   "why": f"vet402 gave no decision ({type(exc).__name__})."}
     status = record.get("status")
     paying = (record.get("method") or method or "GET")
